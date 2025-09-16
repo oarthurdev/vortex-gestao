@@ -1,9 +1,9 @@
-import { type User, type InsertUser, type Company, type InsertCompany, type Property, type InsertProperty, type Client, type InsertClient, type Contract, type InsertContract, type Transaction, type InsertTransaction, type Activity, type InsertActivity, type ContractWithDetails, type TransactionWithDetails } from "@shared/schema";
+import { type User, type InsertUser, type Company, type InsertCompany, type Property, type InsertProperty, type Client, type InsertClient, type Contract, type InsertContract, type Transaction, type InsertTransaction, type Activity, type InsertActivity, type ContractWithDetails, type TransactionWithDetails, type Construction, type InsertConstruction, type ConstructionTask, type InsertConstructionTask, type ConstructionExpense, type InsertConstructionExpense, type ConstructionWithDetails } from "@shared/schema";
 import { randomUUID } from "crypto";
 import session from "express-session";
 import createMemoryStore from "memorystore";
 import { db } from "./db";
-import { companies, users, properties, clients, contracts, transactions, activities } from "@shared/schema";
+import { companies, users, properties, clients, contracts, transactions, activities, constructions, constructionTasks, constructionExpenses } from "@shared/schema";
 import { eq, and, desc, sql, count, sum, gte, lte } from "drizzle-orm";
 
 const MemoryStore = createMemoryStore(session);
@@ -69,6 +69,31 @@ export interface IStorage {
   getActivitiesByCompany(companyId: string, limit?: number): Promise<Activity[]>;
   createActivity(activity: InsertActivity): Promise<Activity>;
   
+  // Construction methods
+  getConstruction(id: string): Promise<Construction | undefined>;
+  getConstructionWithCompanyCheck(id: string, companyId: string): Promise<Construction | undefined>;
+  getConstructionsByCompany(companyId: string): Promise<Construction[]>;
+  getConstructionsWithDetailsByCompany(companyId: string): Promise<ConstructionWithDetails[]>;
+  createConstruction(construction: InsertConstruction): Promise<Construction>;
+  updateConstruction(id: string, construction: Partial<InsertConstruction>): Promise<Construction | undefined>;
+  updateConstructionWithCompanyCheck(id: string, construction: Partial<InsertConstruction>, companyId: string): Promise<Construction | undefined>;
+  deleteConstruction(id: string): Promise<boolean>;
+  deleteConstructionWithCompanyCheck(id: string, companyId: string): Promise<boolean>;
+  
+  // Construction Task methods
+  getConstructionTask(id: string): Promise<ConstructionTask | undefined>;
+  getConstructionTasksByConstruction(constructionId: string): Promise<ConstructionTask[]>;
+  createConstructionTask(task: InsertConstructionTask): Promise<ConstructionTask>;
+  updateConstructionTask(id: string, task: Partial<InsertConstructionTask>): Promise<ConstructionTask | undefined>;
+  deleteConstructionTask(id: string): Promise<boolean>;
+  
+  // Construction Expense methods
+  getConstructionExpense(id: string): Promise<ConstructionExpense | undefined>;
+  getConstructionExpensesByConstruction(constructionId: string): Promise<ConstructionExpense[]>;
+  createConstructionExpense(expense: InsertConstructionExpense): Promise<ConstructionExpense>;
+  updateConstructionExpense(id: string, expense: Partial<InsertConstructionExpense>): Promise<ConstructionExpense | undefined>;
+  deleteConstructionExpense(id: string): Promise<boolean>;
+  
   // Dashboard methods
   getKPIsByCompany(companyId: string): Promise<{
     activeProperties: number;
@@ -86,6 +111,9 @@ export class MemStorage implements IStorage {
   private contracts: Map<string, Contract>;
   private transactions: Map<string, Transaction>;
   private activities: Map<string, Activity>;
+  private constructions: Map<string, Construction>;
+  private constructionTasks: Map<string, ConstructionTask>;
+  private constructionExpenses: Map<string, ConstructionExpense>;
   public sessionStore: session.Store;
 
   constructor() {
@@ -96,6 +124,9 @@ export class MemStorage implements IStorage {
     this.contracts = new Map();
     this.transactions = new Map();
     this.activities = new Map();
+    this.constructions = new Map();
+    this.constructionTasks = new Map();
+    this.constructionExpenses = new Map();
     this.sessionStore = new MemoryStore({
       checkPeriod: 86400000,
     });
@@ -487,6 +518,179 @@ export class MemStorage implements IStorage {
     };
     this.activities.set(id, activity);
     return activity;
+  }
+
+  // Construction methods
+  async getConstruction(id: string): Promise<Construction | undefined> {
+    return this.constructions.get(id);
+  }
+
+  async getConstructionWithCompanyCheck(id: string, companyId: string): Promise<Construction | undefined> {
+    const construction = this.constructions.get(id);
+    return construction && construction.companyId === companyId ? construction : undefined;
+  }
+
+  async getConstructionsByCompany(companyId: string): Promise<Construction[]> {
+    return Array.from(this.constructions.values()).filter(
+      (construction) => construction.companyId === companyId,
+    );
+  }
+
+  async getConstructionsWithDetailsByCompany(companyId: string): Promise<ConstructionWithDetails[]> {
+    const constructions = Array.from(this.constructions.values()).filter(
+      (construction) => construction.companyId === companyId,
+    );
+    
+    return constructions.map(construction => {
+      const property = this.properties.get(construction.propertyId);
+      
+      return {
+        ...construction,
+        property: {
+          id: property!.id,
+          title: property!.title,
+          address: property!.address,
+        },
+      };
+    });
+  }
+
+  async createConstruction(insertConstruction: InsertConstruction): Promise<Construction> {
+    const id = randomUUID();
+    const now = new Date();
+    const construction: Construction = {
+      ...insertConstruction,
+      id,
+      status: insertConstruction.status ?? "planejamento",
+      description: insertConstruction.description ?? null,
+      budget: insertConstruction.budget ?? null,
+      spent: insertConstruction.spent ?? "0",
+      startDate: insertConstruction.startDate ?? null,
+      endDate: insertConstruction.endDate ?? null,
+      expectedEndDate: insertConstruction.expectedEndDate ?? null,
+      progress: insertConstruction.progress ?? 0,
+      contractor: insertConstruction.contractor ?? null,
+      contractorContact: insertConstruction.contractorContact ?? null,
+      notes: insertConstruction.notes ?? null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.constructions.set(id, construction);
+    return construction;
+  }
+
+  async updateConstruction(id: string, constructionData: Partial<InsertConstruction>): Promise<Construction | undefined> {
+    const construction = this.constructions.get(id);
+    if (!construction) return undefined;
+    
+    const updatedConstruction = { ...construction, ...constructionData, updatedAt: new Date() };
+    this.constructions.set(id, updatedConstruction);
+    return updatedConstruction;
+  }
+
+  async updateConstructionWithCompanyCheck(id: string, constructionData: Partial<InsertConstruction>, companyId: string): Promise<Construction | undefined> {
+    const construction = this.constructions.get(id);
+    if (!construction || construction.companyId !== companyId) return undefined;
+    
+    const updatedConstruction = { ...construction, ...constructionData, updatedAt: new Date() };
+    this.constructions.set(id, updatedConstruction);
+    return updatedConstruction;
+  }
+
+  async deleteConstruction(id: string): Promise<boolean> {
+    return this.constructions.delete(id);
+  }
+
+  async deleteConstructionWithCompanyCheck(id: string, companyId: string): Promise<boolean> {
+    const construction = this.constructions.get(id);
+    if (!construction || construction.companyId !== companyId) return false;
+    return this.constructions.delete(id);
+  }
+
+  // Construction Task methods
+  async getConstructionTask(id: string): Promise<ConstructionTask | undefined> {
+    return this.constructionTasks.get(id);
+  }
+
+  async getConstructionTasksByConstruction(constructionId: string): Promise<ConstructionTask[]> {
+    return Array.from(this.constructionTasks.values())
+      .filter((task) => task.constructionId === constructionId)
+      .sort((a, b) => (a.order || 0) - (b.order || 0) || a.createdAt.getTime() - b.createdAt.getTime());
+  }
+
+  async createConstructionTask(insertTask: InsertConstructionTask): Promise<ConstructionTask> {
+    const id = randomUUID();
+    const now = new Date();
+    const task: ConstructionTask = {
+      ...insertTask,
+      id,
+      description: insertTask.description ?? null,
+      status: insertTask.status ?? "pendente",
+      priority: insertTask.priority ?? "media",
+      startDate: insertTask.startDate ?? null,
+      endDate: insertTask.endDate ?? null,
+      assignedTo: insertTask.assignedTo ?? null,
+      estimatedCost: insertTask.estimatedCost ?? null,
+      actualCost: insertTask.actualCost ?? null,
+      progress: insertTask.progress ?? 0,
+      order: insertTask.order ?? 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.constructionTasks.set(id, task);
+    return task;
+  }
+
+  async updateConstructionTask(id: string, taskData: Partial<InsertConstructionTask>): Promise<ConstructionTask | undefined> {
+    const task = this.constructionTasks.get(id);
+    if (!task) return undefined;
+    
+    const updatedTask = { ...task, ...taskData, updatedAt: new Date() };
+    this.constructionTasks.set(id, updatedTask);
+    return updatedTask;
+  }
+
+  async deleteConstructionTask(id: string): Promise<boolean> {
+    return this.constructionTasks.delete(id);
+  }
+
+  // Construction Expense methods
+  async getConstructionExpense(id: string): Promise<ConstructionExpense | undefined> {
+    return this.constructionExpenses.get(id);
+  }
+
+  async getConstructionExpensesByConstruction(constructionId: string): Promise<ConstructionExpense[]> {
+    return Array.from(this.constructionExpenses.values())
+      .filter((expense) => expense.constructionId === constructionId)
+      .sort((a, b) => b.expenseDate.getTime() - a.expenseDate.getTime());
+  }
+
+  async createConstructionExpense(insertExpense: InsertConstructionExpense): Promise<ConstructionExpense> {
+    const id = randomUUID();
+    const expense: ConstructionExpense = {
+      ...insertExpense,
+      id,
+      taskId: insertExpense.taskId ?? null,
+      supplier: insertExpense.supplier ?? null,
+      receipt: insertExpense.receipt ?? null,
+      notes: insertExpense.notes ?? null,
+      createdAt: new Date(),
+    };
+    this.constructionExpenses.set(id, expense);
+    return expense;
+  }
+
+  async updateConstructionExpense(id: string, expenseData: Partial<InsertConstructionExpense>): Promise<ConstructionExpense | undefined> {
+    const expense = this.constructionExpenses.get(id);
+    if (!expense) return undefined;
+    
+    const updatedExpense = { ...expense, ...expenseData };
+    this.constructionExpenses.set(id, updatedExpense);
+    return updatedExpense;
+  }
+
+  async deleteConstructionExpense(id: string): Promise<boolean> {
+    return this.constructionExpenses.delete(id);
   }
 
   // Dashboard methods
@@ -915,6 +1119,171 @@ export class DbStorage implements IStorage {
   async createActivity(insertActivity: InsertActivity): Promise<Activity> {
     const result = await db.insert(activities).values(insertActivity).returning();
     return result[0];
+  }
+
+  // Construction methods
+  async getConstruction(id: string): Promise<Construction | undefined> {
+    const result = await db.select().from(constructions).where(eq(constructions.id, id)).limit(1);
+    return result[0];
+  }
+
+  async getConstructionWithCompanyCheck(id: string, companyId: string): Promise<Construction | undefined> {
+    const result = await db.select().from(constructions)
+      .where(and(eq(constructions.id, id), eq(constructions.companyId, companyId)))
+      .limit(1);
+    return result[0];
+  }
+
+  async getConstructionsByCompany(companyId: string): Promise<Construction[]> {
+    return await db.select().from(constructions).where(eq(constructions.companyId, companyId));
+  }
+
+  async getConstructionsWithDetailsByCompany(companyId: string): Promise<ConstructionWithDetails[]> {
+    const result = await db
+      .select({
+        // Construction fields
+        id: constructions.id,
+        name: constructions.name,
+        description: constructions.description,
+        propertyId: constructions.propertyId,
+        status: constructions.status,
+        budget: constructions.budget,
+        spent: constructions.spent,
+        startDate: constructions.startDate,
+        endDate: constructions.endDate,
+        expectedEndDate: constructions.expectedEndDate,
+        progress: constructions.progress,
+        contractor: constructions.contractor,
+        contractorContact: constructions.contractorContact,
+        notes: constructions.notes,
+        companyId: constructions.companyId,
+        createdAt: constructions.createdAt,
+        updatedAt: constructions.updatedAt,
+        // Property fields
+        propertyTitle: properties.title,
+        propertyAddress: properties.address,
+      })
+      .from(constructions)
+      .leftJoin(properties, eq(constructions.propertyId, properties.id))
+      .where(eq(constructions.companyId, companyId));
+
+    return result.map(row => ({
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      propertyId: row.propertyId,
+      status: row.status,
+      budget: row.budget,
+      spent: row.spent,
+      startDate: row.startDate,
+      endDate: row.endDate,
+      expectedEndDate: row.expectedEndDate,
+      progress: row.progress,
+      contractor: row.contractor,
+      contractorContact: row.contractorContact,
+      notes: row.notes,
+      companyId: row.companyId,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      property: {
+        id: row.propertyId,
+        title: row.propertyTitle!,
+        address: row.propertyAddress!,
+      },
+    }));
+  }
+
+  async createConstruction(insertConstruction: InsertConstruction): Promise<Construction> {
+    const result = await db.insert(constructions).values(insertConstruction).returning();
+    return result[0];
+  }
+
+  async updateConstruction(id: string, constructionData: Partial<InsertConstruction>): Promise<Construction | undefined> {
+    const result = await db.update(constructions)
+      .set({ ...constructionData, updatedAt: new Date() })
+      .where(eq(constructions.id, id))
+      .returning();
+    return result[0];
+  }
+
+  async updateConstructionWithCompanyCheck(id: string, constructionData: Partial<InsertConstruction>, companyId: string): Promise<Construction | undefined> {
+    const result = await db.update(constructions)
+      .set({ ...constructionData, updatedAt: new Date() })
+      .where(and(eq(constructions.id, id), eq(constructions.companyId, companyId)))
+      .returning();
+    return result[0];
+  }
+
+  async deleteConstruction(id: string): Promise<boolean> {
+    const result = await db.delete(constructions).where(eq(constructions.id, id)).returning();
+    return result.length > 0;
+  }
+
+  async deleteConstructionWithCompanyCheck(id: string, companyId: string): Promise<boolean> {
+    const result = await db.delete(constructions)
+      .where(and(eq(constructions.id, id), eq(constructions.companyId, companyId)))
+      .returning();
+    return result.length > 0;
+  }
+
+  // Construction Task methods
+  async getConstructionTask(id: string): Promise<ConstructionTask | undefined> {
+    const result = await db.select().from(constructionTasks).where(eq(constructionTasks.id, id)).limit(1);
+    return result[0];
+  }
+
+  async getConstructionTasksByConstruction(constructionId: string): Promise<ConstructionTask[]> {
+    return await db.select().from(constructionTasks)
+      .where(eq(constructionTasks.constructionId, constructionId))
+      .orderBy(constructionTasks.order, constructionTasks.createdAt);
+  }
+
+  async createConstructionTask(insertTask: InsertConstructionTask): Promise<ConstructionTask> {
+    const result = await db.insert(constructionTasks).values(insertTask).returning();
+    return result[0];
+  }
+
+  async updateConstructionTask(id: string, taskData: Partial<InsertConstructionTask>): Promise<ConstructionTask | undefined> {
+    const result = await db.update(constructionTasks)
+      .set({ ...taskData, updatedAt: new Date() })
+      .where(eq(constructionTasks.id, id))
+      .returning();
+    return result[0];
+  }
+
+  async deleteConstructionTask(id: string): Promise<boolean> {
+    const result = await db.delete(constructionTasks).where(eq(constructionTasks.id, id)).returning();
+    return result.length > 0;
+  }
+
+  // Construction Expense methods
+  async getConstructionExpense(id: string): Promise<ConstructionExpense | undefined> {
+    const result = await db.select().from(constructionExpenses).where(eq(constructionExpenses.id, id)).limit(1);
+    return result[0];
+  }
+
+  async getConstructionExpensesByConstruction(constructionId: string): Promise<ConstructionExpense[]> {
+    return await db.select().from(constructionExpenses)
+      .where(eq(constructionExpenses.constructionId, constructionId))
+      .orderBy(desc(constructionExpenses.expenseDate));
+  }
+
+  async createConstructionExpense(insertExpense: InsertConstructionExpense): Promise<ConstructionExpense> {
+    const result = await db.insert(constructionExpenses).values(insertExpense).returning();
+    return result[0];
+  }
+
+  async updateConstructionExpense(id: string, expenseData: Partial<InsertConstructionExpense>): Promise<ConstructionExpense | undefined> {
+    const result = await db.update(constructionExpenses)
+      .set(expenseData)
+      .where(eq(constructionExpenses.id, id))
+      .returning();
+    return result[0];
+  }
+
+  async deleteConstructionExpense(id: string): Promise<boolean> {
+    const result = await db.delete(constructionExpenses).where(eq(constructionExpenses.id, id)).returning();
+    return result.length > 0;
   }
 
   // Dashboard methods

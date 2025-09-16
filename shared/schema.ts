@@ -103,6 +103,60 @@ export const activities = pgTable("activities", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+export const constructions = pgTable("constructions", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  description: text("description"),
+  propertyId: uuid("property_id").references(() => properties.id).notNull(),
+  status: text("status").notNull().default("planejamento"), // planejamento, em_andamento, pausada, concluida, cancelada
+  budget: decimal("budget", { precision: 12, scale: 2 }),
+  spent: decimal("spent", { precision: 12, scale: 2 }).default("0"),
+  startDate: timestamp("start_date"),
+  endDate: timestamp("end_date"),
+  expectedEndDate: timestamp("expected_end_date"),
+  progress: integer("progress").default(0), // 0-100%
+  contractor: text("contractor"),
+  contractorContact: text("contractor_contact"),
+  notes: text("notes"),
+  companyId: uuid("company_id").references(() => companies.id).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const constructionTasks = pgTable("construction_tasks", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  constructionId: uuid("construction_id").references(() => constructions.id).notNull(),
+  name: text("name").notNull(),
+  description: text("description"),
+  status: text("status").notNull().default("pendente"), // pendente, em_andamento, concluida
+  priority: text("priority").notNull().default("media"), // baixa, media, alta
+  startDate: timestamp("start_date"),
+  endDate: timestamp("end_date"),
+  assignedTo: text("assigned_to"),
+  estimatedCost: decimal("estimated_cost", { precision: 12, scale: 2 }),
+  actualCost: decimal("actual_cost", { precision: 12, scale: 2 }),
+  progress: integer("progress").default(0), // 0-100%
+  order: integer("order").default(0),
+  companyId: uuid("company_id").references(() => companies.id).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const constructionExpenses = pgTable("construction_expenses", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  constructionId: uuid("construction_id").references(() => constructions.id).notNull(),
+  taskId: uuid("task_id").references(() => constructionTasks.id),
+  description: text("description").notNull(),
+  category: text("category").notNull(), // material, mao_de_obra, equipamento, outros
+  amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
+  expenseDate: timestamp("expense_date").notNull(),
+  supplier: text("supplier"),
+  receipt: text("receipt"), // URL or file path
+  notes: text("notes"),
+  companyId: uuid("company_id").references(() => companies.id).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 // Insert schemas
 export const insertCompanySchema = createInsertSchema(companies).omit({
   id: true,
@@ -148,6 +202,32 @@ export const insertActivitySchema = createInsertSchema(activities).omit({
   createdAt: true,
 });
 
+export const insertConstructionSchema = createInsertSchema(constructions).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  startDate: z.coerce.date().optional(),
+  endDate: z.coerce.date().optional(),
+  expectedEndDate: z.coerce.date().optional(),
+});
+
+export const insertConstructionTaskSchema = createInsertSchema(constructionTasks).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  startDate: z.coerce.date().optional(),
+  endDate: z.coerce.date().optional(),
+});
+
+export const insertConstructionExpenseSchema = createInsertSchema(constructionExpenses).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  expenseDate: z.coerce.date(),
+});
+
 // Types
 export type Company = typeof companies.$inferSelect;
 export type InsertCompany = z.infer<typeof insertCompanySchema>;
@@ -169,6 +249,15 @@ export type InsertTransaction = z.infer<typeof insertTransactionSchema>;
 
 export type Activity = typeof activities.$inferSelect;
 export type InsertActivity = z.infer<typeof insertActivitySchema>;
+
+export type Construction = typeof constructions.$inferSelect;
+export type InsertConstruction = z.infer<typeof insertConstructionSchema>;
+
+export type ConstructionTask = typeof constructionTasks.$inferSelect;
+export type InsertConstructionTask = z.infer<typeof insertConstructionTaskSchema>;
+
+export type ConstructionExpense = typeof constructionExpenses.$inferSelect;
+export type InsertConstructionExpense = z.infer<typeof insertConstructionExpenseSchema>;
 
 // Contract with related details
 export interface ContractWithDetails extends Contract {
@@ -198,4 +287,15 @@ export interface TransactionWithDetails extends Transaction {
       name: string;
     };
   };
+}
+
+// Construction with related details
+export interface ConstructionWithDetails extends Construction {
+  property: {
+    id: string;
+    title: string;
+    address: string;
+  };
+  tasks?: ConstructionTask[];
+  expenses?: ConstructionExpense[];
 }

@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
 import { setupAuth } from "./auth";
-import { insertPropertySchema, insertClientSchema, insertContractSchema, insertTransactionSchema } from "@shared/schema";
+import { insertPropertySchema, insertClientSchema, insertContractSchema, insertTransactionSchema, insertConstructionSchema, insertConstructionTaskSchema, insertConstructionExpenseSchema } from "@shared/schema";
 import { z } from "zod";
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -392,6 +392,355 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(kpis);
     } catch (error) {
       res.status(500).json({ message: "Erro ao buscar KPIs" });
+    }
+  });
+
+  // Construction routes
+  app.get("/api/constructions", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const constructions = await storage.getConstructionsWithDetailsByCompany(req.user!.companyId);
+      res.json(constructions);
+    } catch (error) {
+      res.status(500).json({ message: "Erro ao buscar construções" });
+    }
+  });
+
+  app.get("/api/constructions/:id", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const { id } = req.params;
+      const construction = await storage.getConstructionWithCompanyCheck(id, req.user!.companyId);
+      
+      if (!construction) {
+        return res.status(404).json({ message: "Construção não encontrada" });
+      }
+      
+      res.json(construction);
+    } catch (error) {
+      res.status(500).json({ message: "Erro ao buscar construção" });
+    }
+  });
+
+  app.post("/api/constructions", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const data = insertConstructionSchema.parse({
+        ...req.body,
+        companyId: req.user!.companyId,
+      });
+      const construction = await storage.createConstruction(data);
+      
+      // Create activity log
+      await storage.createActivity({
+        type: "construction_created",
+        title: "Nova construção criada",
+        description: `${construction.name} foi criada no sistema`,
+        entityType: "construction",
+        entityId: construction.id,
+        userId: req.user!.id,
+        companyId: req.user!.companyId,
+      });
+      
+      res.status(201).json(construction);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Dados inválidos", errors: error.errors });
+      }
+      res.status(500).json({ message: "Erro ao criar construção" });
+    }
+  });
+
+  app.put("/api/constructions/:id", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const { id } = req.params;
+      const data = insertConstructionSchema.partial().parse(req.body);
+      const construction = await storage.updateConstructionWithCompanyCheck(id, data, req.user!.companyId);
+      
+      if (!construction) {
+        return res.status(404).json({ message: "Construção não encontrada" });
+      }
+      
+      res.json(construction);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Dados inválidos", errors: error.errors });
+      }
+      res.status(500).json({ message: "Erro ao atualizar construção" });
+    }
+  });
+
+  app.delete("/api/constructions/:id", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const { id } = req.params;
+      const deleted = await storage.deleteConstructionWithCompanyCheck(id, req.user!.companyId);
+      
+      if (!deleted) {
+        return res.status(404).json({ message: "Construção não encontrada" });
+      }
+      
+      res.sendStatus(204);
+    } catch (error) {
+      res.status(500).json({ message: "Erro ao deletar construção" });
+    }
+  });
+
+  // Construction Tasks routes
+  app.get("/api/constructions/:constructionId/tasks", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const { constructionId } = req.params;
+      
+      // Verify construction belongs to user's company
+      const construction = await storage.getConstructionWithCompanyCheck(constructionId, req.user!.companyId);
+      if (!construction) {
+        return res.status(404).json({ message: "Construção não encontrada" });
+      }
+      
+      const tasks = await storage.getConstructionTasksByConstruction(constructionId);
+      res.json(tasks);
+    } catch (error) {
+      res.status(500).json({ message: "Erro ao buscar tarefas" });
+    }
+  });
+
+  app.post("/api/constructions/:constructionId/tasks", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const { constructionId } = req.params;
+      
+      // Verify construction belongs to user's company
+      const construction = await storage.getConstructionWithCompanyCheck(constructionId, req.user!.companyId);
+      if (!construction) {
+        return res.status(404).json({ message: "Construção não encontrada" });
+      }
+      
+      const data = insertConstructionTaskSchema.parse({
+        ...req.body,
+        constructionId,
+        companyId: req.user!.companyId,
+      });
+      const task = await storage.createConstructionTask(data);
+      
+      res.status(201).json(task);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Dados inválidos", errors: error.errors });
+      }
+      res.status(500).json({ message: "Erro ao criar tarefa" });
+    }
+  });
+
+  app.put("/api/construction-tasks/:id", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const { id } = req.params;
+      
+      // Verify task exists and belongs to user's company construction
+      const existingTask = await storage.getConstructionTask(id);
+      if (!existingTask) {
+        return res.status(404).json({ message: "Tarefa não encontrada" });
+      }
+      
+      const construction = await storage.getConstructionWithCompanyCheck(existingTask.constructionId, req.user!.companyId);
+      if (!construction) {
+        return res.status(404).json({ message: "Tarefa não encontrada" });
+      }
+      
+      const data = insertConstructionTaskSchema.partial().parse(req.body);
+      const task = await storage.updateConstructionTask(id, data);
+      
+      if (!task) {
+        return res.status(404).json({ message: "Tarefa não encontrada" });
+      }
+      
+      res.json(task);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Dados inválidos", errors: error.errors });
+      }
+      res.status(500).json({ message: "Erro ao atualizar tarefa" });
+    }
+  });
+
+  app.delete("/api/construction-tasks/:id", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const { id } = req.params;
+      
+      // Verify task exists and belongs to user's company construction
+      const existingTask = await storage.getConstructionTask(id);
+      if (!existingTask) {
+        return res.status(404).json({ message: "Tarefa não encontrada" });
+      }
+      
+      const construction = await storage.getConstructionWithCompanyCheck(existingTask.constructionId, req.user!.companyId);
+      if (!construction) {
+        return res.status(404).json({ message: "Tarefa não encontrada" });
+      }
+      
+      const deleted = await storage.deleteConstructionTask(id);
+      
+      if (!deleted) {
+        return res.status(404).json({ message: "Tarefa não encontrada" });
+      }
+      
+      res.sendStatus(204);
+    } catch (error) {
+      res.status(500).json({ message: "Erro ao deletar tarefa" });
+    }
+  });
+
+  // Construction Expenses routes
+  app.get("/api/constructions/:constructionId/expenses", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const { constructionId } = req.params;
+      
+      // Verify construction belongs to user's company
+      const construction = await storage.getConstructionWithCompanyCheck(constructionId, req.user!.companyId);
+      if (!construction) {
+        return res.status(404).json({ message: "Construção não encontrada" });
+      }
+      
+      const expenses = await storage.getConstructionExpensesByConstruction(constructionId);
+      res.json(expenses);
+    } catch (error) {
+      res.status(500).json({ message: "Erro ao buscar despesas" });
+    }
+  });
+
+  app.post("/api/constructions/:constructionId/expenses", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const { constructionId } = req.params;
+      
+      // Verify construction belongs to user's company
+      const construction = await storage.getConstructionWithCompanyCheck(constructionId, req.user!.companyId);
+      if (!construction) {
+        return res.status(404).json({ message: "Construção não encontrada" });
+      }
+      
+      // Normalize data before validation
+      const normalizedData = {
+        ...req.body,
+        constructionId,
+        companyId: req.user!.companyId,
+      };
+      
+      // Handle optional taskId - convert empty string to undefined
+      if (normalizedData.taskId === "" || normalizedData.taskId === null) {
+        delete normalizedData.taskId;
+      }
+      
+      // Normalize amount to string and handle comma decimal separator
+      if (typeof normalizedData.amount === 'number') {
+        normalizedData.amount = normalizedData.amount.toString();
+      }
+      if (typeof normalizedData.amount === 'string' && normalizedData.amount.includes(',')) {
+        normalizedData.amount = normalizedData.amount.replace(',', '.');
+      }
+      
+      const data = insertConstructionExpenseSchema.parse(normalizedData);
+      const expense = await storage.createConstructionExpense(data);
+      
+      res.status(201).json(expense);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Dados inválidos", errors: error.errors });
+      }
+      res.status(500).json({ message: "Erro ao criar despesa" });
+    }
+  });
+
+  app.put("/api/construction-expenses/:id", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const { id } = req.params;
+      
+      // Verify expense exists and belongs to user's company construction
+      const existingExpense = await storage.getConstructionExpense(id);
+      if (!existingExpense) {
+        return res.status(404).json({ message: "Despesa não encontrada" });
+      }
+      
+      const construction = await storage.getConstructionWithCompanyCheck(existingExpense.constructionId, req.user!.companyId);
+      if (!construction) {
+        return res.status(404).json({ message: "Despesa não encontrada" });
+      }
+      
+      // Normalize data before validation
+      const normalizedData = { ...req.body };
+      
+      // Handle optional taskId - convert empty string to undefined
+      if (normalizedData.taskId === "" || normalizedData.taskId === null) {
+        delete normalizedData.taskId;
+      }
+      
+      // Normalize amount to string and handle comma decimal separator
+      if (typeof normalizedData.amount === 'number') {
+        normalizedData.amount = normalizedData.amount.toString();
+      }
+      if (typeof normalizedData.amount === 'string' && normalizedData.amount.includes(',')) {
+        normalizedData.amount = normalizedData.amount.replace(',', '.');
+      }
+      
+      const data = insertConstructionExpenseSchema.partial().parse(normalizedData);
+      const expense = await storage.updateConstructionExpense(id, data);
+      
+      if (!expense) {
+        return res.status(404).json({ message: "Despesa não encontrada" });
+      }
+      
+      res.json(expense);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Dados inválidos", errors: error.errors });
+      }
+      res.status(500).json({ message: "Erro ao atualizar despesa" });
+    }
+  });
+
+  app.delete("/api/construction-expenses/:id", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const { id } = req.params;
+      
+      // Verify expense exists and belongs to user's company construction
+      const existingExpense = await storage.getConstructionExpense(id);
+      if (!existingExpense) {
+        return res.status(404).json({ message: "Despesa não encontrada" });
+      }
+      
+      const construction = await storage.getConstructionWithCompanyCheck(existingExpense.constructionId, req.user!.companyId);
+      if (!construction) {
+        return res.status(404).json({ message: "Despesa não encontrada" });
+      }
+      
+      const deleted = await storage.deleteConstructionExpense(id);
+      
+      if (!deleted) {
+        return res.status(404).json({ message: "Despesa não encontrada" });
+      }
+      
+      res.sendStatus(204);
+    } catch (error) {
+      res.status(500).json({ message: "Erro ao deletar despesa" });
     }
   });
 

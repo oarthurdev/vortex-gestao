@@ -272,7 +272,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (!req.isAuthenticated()) return res.sendStatus(401);
     
     try {
-      const transactions = await storage.getTransactionsByCompany(req.user!.companyId);
+      const transactions = await storage.getTransactionsWithDetailsByCompany(req.user!.companyId);
       res.json(transactions);
     } catch (error) {
       res.status(500).json({ message: "Erro ao buscar transações" });
@@ -283,14 +283,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (!req.isAuthenticated()) return res.sendStatus(401);
     
     try {
-      const data = insertTransactionSchema.parse({
+      // Normalize data before validation
+      const normalizedData = {
         ...req.body,
         companyId: req.user!.companyId,
-      });
+      };
+      
+      // Handle optional contractId - convert empty string to undefined
+      if (normalizedData.contractId === "" || normalizedData.contractId === null) {
+        delete normalizedData.contractId;
+      }
+      
+      // Normalize amount to string and handle comma decimal separator
+      if (typeof normalizedData.amount === 'number') {
+        normalizedData.amount = normalizedData.amount.toString();
+      }
+      if (typeof normalizedData.amount === 'string' && normalizedData.amount.includes(',')) {
+        normalizedData.amount = normalizedData.amount.replace(',', '.');
+      }
+      
+      const data = insertTransactionSchema.parse(normalizedData);
       const transaction = await storage.createTransaction(data);
       res.status(201).json(transaction);
     } catch (error) {
       if (error instanceof z.ZodError) {
+        console.log('Transaction validation errors:', error.errors); // Temporary debugging
         return res.status(400).json({ message: "Dados inválidos", errors: error.errors });
       }
       res.status(500).json({ message: "Erro ao criar transação" });
@@ -302,7 +319,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
     
     try {
       const { id } = req.params;
-      const data = insertTransactionSchema.partial().parse(req.body);
+      
+      // Normalize data before validation
+      const normalizedData = { ...req.body };
+      
+      // Handle optional contractId - convert empty string to undefined
+      if (normalizedData.contractId === "" || normalizedData.contractId === null) {
+        delete normalizedData.contractId;
+      }
+      
+      // Normalize amount to string and handle comma decimal separator
+      if (typeof normalizedData.amount === 'number') {
+        normalizedData.amount = normalizedData.amount.toString();
+      }
+      if (typeof normalizedData.amount === 'string' && normalizedData.amount.includes(',')) {
+        normalizedData.amount = normalizedData.amount.replace(',', '.');
+      }
+      
+      const data = insertTransactionSchema.partial().parse(normalizedData);
       const transaction = await storage.updateTransactionWithCompanyCheck(id, data, req.user!.companyId);
       
       if (!transaction) {
@@ -312,6 +346,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(transaction);
     } catch (error) {
       if (error instanceof z.ZodError) {
+        console.log('Transaction update validation errors:', error.errors); // Temporary debugging
         return res.status(400).json({ message: "Dados inválidos", errors: error.errors });
       }
       res.status(500).json({ message: "Erro ao atualizar transação" });

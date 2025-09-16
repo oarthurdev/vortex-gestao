@@ -1,4 +1,4 @@
-import { type User, type InsertUser, type Company, type InsertCompany, type Property, type InsertProperty, type Client, type InsertClient, type Contract, type InsertContract, type Transaction, type InsertTransaction, type Activity, type InsertActivity } from "@shared/schema";
+import { type User, type InsertUser, type Company, type InsertCompany, type Property, type InsertProperty, type Client, type InsertClient, type Contract, type InsertContract, type Transaction, type InsertTransaction, type Activity, type InsertActivity, type TransactionWithDetails } from "@shared/schema";
 import { randomUUID } from "crypto";
 import session from "express-session";
 import createMemoryStore from "memorystore";
@@ -57,6 +57,7 @@ export interface IStorage {
   getTransaction(id: string): Promise<Transaction | undefined>;
   getTransactionWithCompanyCheck(id: string, companyId: string): Promise<Transaction | undefined>;
   getTransactionsByCompany(companyId: string): Promise<Transaction[]>;
+  getTransactionsWithDetailsByCompany(companyId: string): Promise<TransactionWithDetails[]>;
   createTransaction(transaction: InsertTransaction): Promise<Transaction>;
   updateTransaction(id: string, transaction: Partial<InsertTransaction>): Promise<Transaction | undefined>;
   updateTransactionWithCompanyCheck(id: string, transaction: Partial<InsertTransaction>, companyId: string): Promise<Transaction | undefined>;
@@ -359,6 +360,41 @@ export class MemStorage implements IStorage {
     return Array.from(this.transactions.values()).filter(
       (transaction) => transaction.companyId === companyId,
     );
+  }
+
+  async getTransactionsWithDetailsByCompany(companyId: string): Promise<TransactionWithDetails[]> {
+    const transactions = Array.from(this.transactions.values()).filter(
+      (transaction) => transaction.companyId === companyId,
+    );
+    
+    return transactions.map(transaction => {
+      const transactionWithDetails: TransactionWithDetails = { ...transaction };
+      
+      if (transaction.contractId) {
+        const contract = this.contracts.get(transaction.contractId);
+        if (contract) {
+          const property = this.properties.get(contract.propertyId);
+          const client = this.clients.get(contract.clientId);
+          
+          if (property && client) {
+            transactionWithDetails.contract = {
+              id: contract.id,
+              type: contract.type,
+              property: {
+                id: property.id,
+                title: property.title,
+              },
+              client: {
+                id: client.id,
+                name: client.name,
+              },
+            };
+          }
+        }
+      }
+      
+      return transactionWithDetails;
+    });
   }
 
   async createTransaction(insertTransaction: InsertTransaction): Promise<Transaction> {
@@ -686,6 +722,71 @@ export class DbStorage implements IStorage {
 
   async getTransactionsByCompany(companyId: string): Promise<Transaction[]> {
     return await db.select().from(transactions).where(eq(transactions.companyId, companyId));
+  }
+
+  async getTransactionsWithDetailsByCompany(companyId: string): Promise<TransactionWithDetails[]> {
+    const result = await db
+      .select({
+        // Transaction fields
+        id: transactions.id,
+        type: transactions.type,
+        category: transactions.category,
+        description: transactions.description,
+        amount: transactions.amount,
+        dueDate: transactions.dueDate,
+        paidDate: transactions.paidDate,
+        status: transactions.status,
+        contractId: transactions.contractId,
+        companyId: transactions.companyId,
+        createdAt: transactions.createdAt,
+        // Contract fields (nullable)
+        contractType: contracts.type,
+        contractIdField: contracts.id,
+        // Property fields (nullable)
+        propertyId: properties.id,
+        propertyTitle: properties.title,
+        // Client fields (nullable)
+        clientId: clients.id,
+        clientName: clients.name,
+      })
+      .from(transactions)
+      .leftJoin(contracts, eq(transactions.contractId, contracts.id))
+      .leftJoin(properties, eq(contracts.propertyId, properties.id))
+      .leftJoin(clients, eq(contracts.clientId, clients.id))
+      .where(eq(transactions.companyId, companyId));
+
+    return result.map(row => {
+      const transaction: TransactionWithDetails = {
+        id: row.id,
+        type: row.type,
+        category: row.category,
+        description: row.description,
+        amount: row.amount,
+        dueDate: row.dueDate,
+        paidDate: row.paidDate,
+        status: row.status,
+        contractId: row.contractId,
+        companyId: row.companyId,
+        createdAt: row.createdAt,
+      };
+
+      if (row.contractIdField && row.propertyId && row.clientId) {
+        transaction.contract = {
+          id: row.contractIdField,
+          type: row.contractType!,
+          property: {
+            id: row.propertyId,
+            title: row.propertyTitle!,
+          },
+          client: {
+            id: row.clientId,
+            name: row.clientName!,
+          },
+        };
+      }
+
+      return transaction;
+    });
   }
 
   async createTransaction(insertTransaction: InsertTransaction): Promise<Transaction> {

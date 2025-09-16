@@ -1,4 +1,4 @@
-import { type User, type InsertUser, type Company, type InsertCompany, type Property, type InsertProperty, type Client, type InsertClient, type Contract, type InsertContract, type Transaction, type InsertTransaction, type Activity, type InsertActivity, type TransactionWithDetails } from "@shared/schema";
+import { type User, type InsertUser, type Company, type InsertCompany, type Property, type InsertProperty, type Client, type InsertClient, type Contract, type InsertContract, type Transaction, type InsertTransaction, type Activity, type InsertActivity, type ContractWithDetails, type TransactionWithDetails } from "@shared/schema";
 import { randomUUID } from "crypto";
 import session from "express-session";
 import createMemoryStore from "memorystore";
@@ -47,6 +47,7 @@ export interface IStorage {
   getContract(id: string): Promise<Contract | undefined>;
   getContractWithCompanyCheck(id: string, companyId: string): Promise<Contract | undefined>;
   getContractsByCompany(companyId: string): Promise<Contract[]>;
+  getContractsWithDetailsByCompany(companyId: string): Promise<ContractWithDetails[]>;
   createContract(contract: InsertContract): Promise<Contract>;
   updateContract(id: string, contract: Partial<InsertContract>): Promise<Contract | undefined>;
   updateContractWithCompanyCheck(id: string, contract: Partial<InsertContract>, companyId: string): Promise<Contract | undefined>;
@@ -299,6 +300,31 @@ export class MemStorage implements IStorage {
     return Array.from(this.contracts.values()).filter(
       (contract) => contract.companyId === companyId,
     );
+  }
+
+  async getContractsWithDetailsByCompany(companyId: string): Promise<ContractWithDetails[]> {
+    const contracts = Array.from(this.contracts.values()).filter(
+      (contract) => contract.companyId === companyId,
+    );
+    
+    return contracts.map(contract => {
+      const property = this.properties.get(contract.propertyId);
+      const client = this.clients.get(contract.clientId);
+      
+      return {
+        ...contract,
+        property: {
+          id: property!.id,
+          title: property!.title,
+          address: property!.address,
+        },
+        client: {
+          id: client!.id,
+          name: client!.name,
+          email: client!.email,
+        },
+      };
+    });
   }
 
   async createContract(insertContract: InsertContract): Promise<Contract> {
@@ -672,6 +698,62 @@ export class DbStorage implements IStorage {
 
   async getContractsByCompany(companyId: string): Promise<Contract[]> {
     return await db.select().from(contracts).where(eq(contracts.companyId, companyId));
+  }
+
+  async getContractsWithDetailsByCompany(companyId: string): Promise<ContractWithDetails[]> {
+    const result = await db
+      .select({
+        // Contract fields
+        id: contracts.id,
+        type: contracts.type,
+        propertyId: contracts.propertyId,
+        clientId: contracts.clientId,
+        value: contracts.value,
+        startDate: contracts.startDate,
+        endDate: contracts.endDate,
+        status: contracts.status,
+        terms: contracts.terms,
+        commission: contracts.commission,
+        companyId: contracts.companyId,
+        createdAt: contracts.createdAt,
+        updatedAt: contracts.updatedAt,
+        // Property fields
+        propertyTitle: properties.title,
+        propertyAddress: properties.address,
+        // Client fields
+        clientName: clients.name,
+        clientEmail: clients.email,
+      })
+      .from(contracts)
+      .leftJoin(properties, eq(contracts.propertyId, properties.id))
+      .leftJoin(clients, eq(contracts.clientId, clients.id))
+      .where(eq(contracts.companyId, companyId));
+
+    return result.map(row => ({
+      id: row.id,
+      type: row.type,
+      propertyId: row.propertyId,
+      clientId: row.clientId,
+      value: row.value,
+      startDate: row.startDate,
+      endDate: row.endDate,
+      status: row.status,
+      terms: row.terms,
+      commission: row.commission,
+      companyId: row.companyId,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      property: {
+        id: row.propertyId,
+        title: row.propertyTitle!,
+        address: row.propertyAddress!,
+      },
+      client: {
+        id: row.clientId,
+        name: row.clientName!,
+        email: row.clientEmail!,
+      },
+    }));
   }
 
   async createContract(insertContract: InsertContract): Promise<Contract> {

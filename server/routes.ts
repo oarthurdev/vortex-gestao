@@ -186,7 +186,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (!req.isAuthenticated()) return res.sendStatus(401);
     
     try {
-      const contracts = await storage.getContractsByCompany(req.user!.companyId);
+      const contracts = await storage.getContractsWithDetailsByCompany(req.user!.companyId);
       res.json(contracts);
     } catch (error) {
       res.status(500).json({ message: "Erro ao buscar contratos" });

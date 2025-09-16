@@ -130,6 +130,9 @@ export const insertContractSchema = createInsertSchema(contracts).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+}).extend({
+  startDate: z.coerce.date(),
+  endDate: z.coerce.date().optional(),
 });
 
 export const insertTransactionSchema = createInsertSchema(transactions).omit({
@@ -166,6 +169,20 @@ export type InsertTransaction = z.infer<typeof insertTransactionSchema>;
 
 export type Activity = typeof activities.$inferSelect;
 export type InsertActivity = z.infer<typeof insertActivitySchema>;
+
+// Contract with related details
+export interface ContractWithDetails extends Contract {
+  property: {
+    id: string;
+    title: string;
+    address: string;
+  };
+  client: {
+    id: string;
+    name: string;
+    email: string;
+  };
+}
 
 // Transaction with related details
 export interface TransactionWithDetails extends Transaction {

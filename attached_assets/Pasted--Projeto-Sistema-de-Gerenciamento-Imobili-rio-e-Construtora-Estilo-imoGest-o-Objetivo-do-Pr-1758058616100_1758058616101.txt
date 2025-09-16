@@ -1,0 +1,80 @@
+🏗️ Projeto: Sistema de Gerenciamento Imobiliário e Construtora (Estilo imoGestão)
+📌 Objetivo do Projeto
+
+Criar um sistema completo, customizável e robusto de gestão para imobiliárias e construtoras, inspirado no imoGestão. O sistema permitirá controle de imóveis, clientes, contratos, locações, vendas, obras e muito mais, com suporte a multi-empresa, atualização em tempo real e alta escalabilidade.
+
+💡 Funcionalidades Principais
+
+Login Multi-Empresa: cada empresa terá acesso separado, com seu próprio ambiente e dados isolados.
+
+Autenticação de Usuário: sistema de login com permissões por perfil (admin, corretor, financeiro, etc.).
+
+Gerenciamento de Imóveis: cadastro completo de imóveis com localização, fotos, status, características técnicas e histórico.
+
+Gestão de Clientes: CRM básico para armazenar e interagir com leads, proprietários e locatários.
+
+Locação e Vendas: controle de contratos, vencimentos, comissões, pagamentos e repasses.
+
+Gestão de Obras (para construtoras): cronograma de execução, orçamentos, fornecedores, insumos e progresso.
+
+Financeiro: contas a pagar e receber, centro de custos, emissão de boletos (integração opcional com API externa).
+
+Alertas e Atualizações em Tempo Real: notificação de mudanças em imóveis, clientes ou contratos, via WebSocket.
+
+Painel Administrativo com Dashboards Dinâmicos: visão geral do negócio, com KPIs em tempo real.
+
+🧱 Arquitetura & Tecnologias
+
+Frontend: React.js com TailwindCSS para uma interface moderna e responsiva.
+
+Backend: Node.js + Express ou Flask (escolha da IA conforme mais conveniente no Replit).
+
+Banco de Dados: Supabase (PostgreSQL) com suporte a dados relacionais, autenticação e real-time via WebSocket.
+
+🖥️ Interface do Usuário
+
+Estilo moderno, intuitivo, com navegação lateral, dashboards claros, filtros inteligentes, tema claro/escuro, acessível para todos os perfis de usuários.
+
+🔌 Integrações Terceirizadas Futuras (não implementar agora, mas prever estrutura)
+
+API de boletos e pagamentos (Ex: Gerencianet, Pagar.me)
+
+Google Maps API para geolocalização de imóveis
+
+WhatsApp API (para interação com leads)
+
+🌍 Plataforma-Alvo
+
+Web App (desktop first, responsivo para tablets e celulares)
+
+🛜 Modo de Funcionamento
+
+Online, com sincronização e colaboração em tempo real
+
+Eventualmente poderá ser transformado em PWA para uso offline
+
+📤 Saídas Esperadas
+
+Cadastros gerenciáveis com CRUD completo
+
+Painéis e relatórios em PDF/CSV
+
+Notificações em tempo real no app
+
+Logs de atividade para auditoria
+
+✨ Requisitos Não Funcionais
+
+Resposta de API em menos de 500ms
+
+Proteção de dados via JWT e hashed passwords (bcrypt)
+
+Suporte a pelo menos 100 usuários simultâneos
+
+Interface multilíngue (português inicialmente, com suporte a i18n)
+
+🌐 Idiomas
+
+Idioma de interação com o Replit Agent: Português
+
+Idioma da interface do sistema: Português (Brasil)

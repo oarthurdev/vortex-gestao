@@ -117,7 +117,7 @@ export default function NotificationToast({
         </div>
       )}
 
-      <style jsx>{`
+      <style>{`
         @keyframes shrink {
           from {
             width: 100%;

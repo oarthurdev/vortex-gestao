@@ -54,8 +54,14 @@ export const clients = pgTable("clients", {
   phone: text("phone").notNull(),
   document: text("document"), // CPF/CNPJ
   type: text("type").notNull(), // lead, proprietario, locatario, comprador
+  stage: text("stage").notNull().default("novo"), // novo, qualificado, visita_agendada, proposta, fechado, perdido
+  source: text("source"),
+  tags: text("tags").array(),
+  pipelineValue: decimal("pipeline_value", { precision: 12, scale: 2 }),
   address: text("address"),
   notes: text("notes"),
+  lastContactAt: timestamp("last_contact_at"),
+  nextFollowUp: timestamp("next_follow_up"),
   companyId: uuid("company_id").references(() => companies.id).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -157,6 +163,37 @@ export const constructionExpenses = pgTable("construction_expenses", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+export const clientInteractions = pgTable("client_interactions", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  clientId: uuid("client_id").references(() => clients.id).notNull(),
+  companyId: uuid("company_id").references(() => companies.id).notNull(),
+  type: text("type").notNull(), // contato_telefonico, whatsapp, email, visita, proposta, assinatura
+  channel: text("channel"),
+  summary: text("summary").notNull(),
+  occurredAt: timestamp("occurred_at").notNull(),
+  nextSteps: text("next_steps"),
+  nextFollowUp: timestamp("next_follow_up"),
+  stage: text("stage"),
+  createdBy: text("created_by"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const appointments = pgTable("appointments", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  clientId: uuid("client_id").references(() => clients.id).notNull(),
+  propertyId: uuid("property_id").references(() => properties.id),
+  companyId: uuid("company_id").references(() => companies.id).notNull(),
+  type: text("type").notNull().default("visita"), // visita, reuniao, vistoria
+  status: text("status").notNull().default("agendado"), // agendado, confirmado, realizado, cancelado, no_show
+  scheduledAt: timestamp("scheduled_at").notNull(),
+  durationMinutes: integer("duration_minutes").default(60),
+  notes: text("notes"),
+  agentName: text("agent_name"),
+  channel: text("channel"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 // Insert schemas
 export const insertCompanySchema = createInsertSchema(companies).omit({
   id: true,
@@ -178,6 +215,11 @@ export const insertClientSchema = createInsertSchema(clients).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+}).extend({
+  lastContactAt: z.coerce.date().optional(),
+  nextFollowUp: z.coerce.date().optional(),
+  tags: z.array(z.string()).optional(),
+  pipelineValue: z.union([z.string(), z.number()]).optional(),
 });
 
 export const insertContractSchema = createInsertSchema(contracts).omit({
@@ -228,6 +270,22 @@ export const insertConstructionExpenseSchema = createInsertSchema(constructionEx
   expenseDate: z.coerce.date(),
 });
 
+export const insertClientInteractionSchema = createInsertSchema(clientInteractions).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  occurredAt: z.coerce.date(),
+  nextFollowUp: z.coerce.date().optional(),
+});
+
+export const insertAppointmentSchema = createInsertSchema(appointments).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  scheduledAt: z.coerce.date(),
+});
+
 // Types
 export type Company = typeof companies.$inferSelect;
 export type InsertCompany = z.infer<typeof insertCompanySchema>;
@@ -240,6 +298,12 @@ export type InsertProperty = z.infer<typeof insertPropertySchema>;
 
 export type Client = typeof clients.$inferSelect;
 export type InsertClient = z.infer<typeof insertClientSchema>;
+
+export type ClientInteraction = typeof clientInteractions.$inferSelect;
+export type InsertClientInteraction = z.infer<typeof insertClientInteractionSchema>;
+
+export type Appointment = typeof appointments.$inferSelect;
+export type InsertAppointment = z.infer<typeof insertAppointmentSchema>;
 
 export type Contract = typeof contracts.$inferSelect;
 export type InsertContract = z.infer<typeof insertContractSchema>;
@@ -298,4 +362,22 @@ export interface ConstructionWithDetails extends Construction {
   };
   tasks?: ConstructionTask[];
   expenses?: ConstructionExpense[];
+}
+
+export interface PipelineStageSummary {
+  stage: string;
+  label: string;
+  count: number;
+  totalValue: number;
+}
+
+export interface ClientPipelineSummary {
+  stages: PipelineStageSummary[];
+  conversionRate: number;
+  upcomingFollowUps: Array<{
+    clientId: string;
+    name: string;
+    stage: string;
+    nextFollowUp: Date;
+  }>;
 }

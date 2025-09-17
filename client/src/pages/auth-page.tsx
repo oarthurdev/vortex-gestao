@@ -22,13 +22,20 @@ export default function AuthPage() {
     companyId: "",
     rememberMe: false,
   });
-  const [registerData, setRegisterData] = useState({
+  const [registerData, setRegisterData] = useState<{
+    username: string;
+    password: string;
+    email: string;
+    name: string;
+    companyId: string;
+    role: "admin" | "corretor" | "financeiro";
+  }>({
     username: "",
     password: "",
     email: "",
     name: "",
     companyId: "",
-    role: "corretor" as const,
+    role: "corretor",
   });
 
   const { data: companies, isLoading: companiesLoading } = useQuery<Company[]>({

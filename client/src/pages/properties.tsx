@@ -298,7 +298,7 @@ export default function Properties() {
                         id="area"
                         type="number"
                         step="0.01"
-                        value={formData.area}
+                        value={formData.area ?? ""}
                         onChange={(e) => setFormData({ ...formData, area: e.target.value })}
                         placeholder="0.00"
                         data-testid="input-property-area"
@@ -310,7 +310,7 @@ export default function Properties() {
                       <Input
                         id="bedrooms"
                         type="number"
-                        value={formData.bedrooms}
+                        value={formData.bedrooms ?? ""}
                         onChange={(e) => setFormData({ ...formData, bedrooms: parseInt(e.target.value) || 0 })}
                         data-testid="input-property-bedrooms"
                       />
@@ -321,7 +321,7 @@ export default function Properties() {
                       <Input
                         id="bathrooms"
                         type="number"
-                        value={formData.bathrooms}
+                        value={formData.bathrooms ?? ""}
                         onChange={(e) => setFormData({ ...formData, bathrooms: parseInt(e.target.value) || 0 })}
                         data-testid="input-property-bathrooms"
                       />
@@ -332,7 +332,7 @@ export default function Properties() {
                       <Input
                         id="parkingSpaces"
                         type="number"
-                        value={formData.parkingSpaces}
+                        value={formData.parkingSpaces ?? ""}
                         onChange={(e) => setFormData({ ...formData, parkingSpaces: parseInt(e.target.value) || 0 })}
                         data-testid="input-property-parking"
                       />
@@ -343,7 +343,7 @@ export default function Properties() {
                     <Label htmlFor="description">Descrição</Label>
                     <Textarea
                       id="description"
-                      value={formData.description}
+                      value={formData.description ?? ""}
                       onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                       placeholder="Descreva o imóvel..."
                       data-testid="textarea-property-description"

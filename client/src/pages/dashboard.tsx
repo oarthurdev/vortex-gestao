@@ -9,6 +9,7 @@ import RecentActivities from "@/components/dashboard/recent-activities";
 import PropertiesOverview from "@/components/dashboard/properties-overview";
 import ContractsFinancials from "@/components/dashboard/contracts-financials";
 import NotificationToast from "@/components/shared/notification-toast";
+import { UpcomingAppointments } from "@/components/dashboard/upcoming-appointments";
 import { useState } from "react";
 
 export default function Dashboard() {
@@ -42,7 +43,10 @@ export default function Dashboard() {
           
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <RevenueChart />
-            <RecentActivities />
+            <div className="flex flex-col gap-6">
+              <RecentActivities />
+              <UpcomingAppointments />
+            </div>
           </div>
 
           <PropertiesOverview />

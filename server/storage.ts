@@ -1,12 +1,69 @@
-import { type User, type InsertUser, type Company, type InsertCompany, type Property, type InsertProperty, type Client, type InsertClient, type Contract, type InsertContract, type Transaction, type InsertTransaction, type Activity, type InsertActivity, type ContractWithDetails, type TransactionWithDetails, type Construction, type InsertConstruction, type ConstructionTask, type InsertConstructionTask, type ConstructionExpense, type InsertConstructionExpense, type ConstructionWithDetails } from "@shared/schema";
+import { type User, type InsertUser, type Company, type InsertCompany, type Property, type InsertProperty, type Client, type InsertClient, type Contract, type InsertContract, type Transaction, type InsertTransaction, type Activity, type InsertActivity, type ContractWithDetails, type TransactionWithDetails, type Construction, type InsertConstruction, type ConstructionTask, type InsertConstructionTask, type ConstructionExpense, type InsertConstructionExpense, type ConstructionWithDetails, type ClientInteraction, type InsertClientInteraction, type Appointment, type InsertAppointment, type ClientPipelineSummary } from "@shared/schema";
 import { randomUUID } from "crypto";
 import session from "express-session";
 import createMemoryStore from "memorystore";
 import { db } from "./db";
-import { companies, users, properties, clients, contracts, transactions, activities, constructions, constructionTasks, constructionExpenses } from "@shared/schema";
+import { companies, users, properties, clients, contracts, transactions, activities, constructions, constructionTasks, constructionExpenses, clientInteractions, appointments } from "@shared/schema";
 import { eq, and, desc, sql, count, sum, gte, lte } from "drizzle-orm";
 
 const MemoryStore = createMemoryStore(session);
+
+const PIPELINE_STAGES = [
+  { stage: "novo", label: "Novos Leads" },
+  { stage: "qualificado", label: "Qualificados" },
+  { stage: "visita_agendada", label: "Visitas agendadas" },
+  { stage: "proposta", label: "Propostas" },
+  { stage: "fechado", label: "Fechados" },
+  { stage: "perdido", label: "Perdidos" },
+];
+
+function parsePipelineValue(value: Client["pipelineValue"]): number {
+  if (value === null || value === undefined) {
+    return 0;
+  }
+
+  if (typeof value === "number") {
+    return value;
+  }
+
+  const parsed = parseFloat(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function buildPipelineSummary(clients: Client[]): ClientPipelineSummary {
+  const stages = PIPELINE_STAGES.map(({ stage, label }) => {
+    const stageClients = clients.filter(client => client.stage === stage);
+    const totalValue = stageClients.reduce((sum, client) => sum + parsePipelineValue(client.pipelineValue), 0);
+
+    return {
+      stage,
+      label,
+      count: stageClients.length,
+      totalValue,
+    };
+  });
+
+  const totalLeadCount = clients.filter(client => client.type === "lead" || client.type === "comprador").length;
+  const closedCount = clients.filter(client => client.stage === "fechado").length;
+  const conversionRate = totalLeadCount > 0 ? (closedCount / totalLeadCount) * 100 : 0;
+
+  const upcomingFollowUps = clients
+    .filter(client => client.nextFollowUp && client.nextFollowUp.getTime() > Date.now())
+    .sort((a, b) => (a.nextFollowUp?.getTime() || 0) - (b.nextFollowUp?.getTime() || 0))
+    .slice(0, 5)
+    .map(client => ({
+      clientId: client.id,
+      name: client.name,
+      stage: client.stage,
+      nextFollowUp: client.nextFollowUp!,
+    }));
+
+  return {
+    stages,
+    conversionRate,
+    upcomingFollowUps,
+  };
+}
 
 export interface IStorage {
   sessionStore: session.Store;
@@ -42,7 +99,10 @@ export interface IStorage {
   updateClientWithCompanyCheck(id: string, client: Partial<InsertClient>, companyId: string): Promise<Client | undefined>;
   deleteClient(id: string): Promise<boolean>;
   deleteClientWithCompanyCheck(id: string, companyId: string): Promise<boolean>;
-  
+  getClientPipelineSummary(companyId: string): Promise<ClientPipelineSummary>;
+  getClientInteractions(clientId: string, companyId: string): Promise<ClientInteraction[]>;
+  createClientInteraction(interaction: InsertClientInteraction): Promise<ClientInteraction>;
+
   // Contract methods
   getContract(id: string): Promise<Contract | undefined>;
   getContractWithCompanyCheck(id: string, companyId: string): Promise<Contract | undefined>;
@@ -93,7 +153,24 @@ export interface IStorage {
   createConstructionExpense(expense: InsertConstructionExpense): Promise<ConstructionExpense>;
   updateConstructionExpense(id: string, expense: Partial<InsertConstructionExpense>): Promise<ConstructionExpense | undefined>;
   deleteConstructionExpense(id: string): Promise<boolean>;
-  
+
+  // Appointment methods
+  getAppointment(id: string): Promise<Appointment | undefined>;
+  getAppointmentsByCompany(
+    companyId: string,
+    filters?: {
+      status?: string;
+      clientId?: string;
+      upcomingOnly?: boolean;
+      limit?: number;
+      fromDate?: Date;
+      toDate?: Date;
+    },
+  ): Promise<Appointment[]>;
+  createAppointment(appointment: InsertAppointment): Promise<Appointment>;
+  updateAppointment(id: string, appointment: Partial<InsertAppointment>): Promise<Appointment | undefined>;
+  deleteAppointment(id: string): Promise<boolean>;
+
   // Dashboard methods
   getKPIsByCompany(companyId: string): Promise<{
     activeProperties: number;
@@ -114,6 +191,8 @@ export class MemStorage implements IStorage {
   private constructions: Map<string, Construction>;
   private constructionTasks: Map<string, ConstructionTask>;
   private constructionExpenses: Map<string, ConstructionExpense>;
+  private clientInteractions: Map<string, ClientInteraction>;
+  private appointments: Map<string, Appointment>;
   public sessionStore: session.Store;
 
   constructor() {
@@ -127,6 +206,8 @@ export class MemStorage implements IStorage {
     this.constructions = new Map();
     this.constructionTasks = new Map();
     this.constructionExpenses = new Map();
+    this.clientInteractions = new Map();
+    this.appointments = new Map();
     this.sessionStore = new MemoryStore({
       checkPeriod: 86400000,
     });
@@ -276,12 +357,23 @@ export class MemStorage implements IStorage {
   async createClient(insertClient: InsertClient): Promise<Client> {
     const id = randomUUID();
     const now = new Date();
+    const normalizedPipelineValue = insertClient.pipelineValue
+      ? typeof insertClient.pipelineValue === "number"
+        ? insertClient.pipelineValue.toString()
+        : insertClient.pipelineValue
+      : null;
     const client: Client = {
       ...insertClient,
       id,
       document: insertClient.document ?? null,
       address: insertClient.address ?? null,
       notes: insertClient.notes ?? null,
+      stage: insertClient.stage ?? "novo",
+      source: insertClient.source ?? null,
+      tags: insertClient.tags ?? [],
+      pipelineValue: normalizedPipelineValue,
+      lastContactAt: insertClient.lastContactAt ?? null,
+      nextFollowUp: insertClient.nextFollowUp ?? null,
       createdAt: now,
       updatedAt: now,
     };
@@ -292,8 +384,20 @@ export class MemStorage implements IStorage {
   async updateClient(id: string, clientData: Partial<InsertClient>): Promise<Client | undefined> {
     const client = this.clients.get(id);
     if (!client) return undefined;
-    
-    const updatedClient = { ...client, ...clientData, updatedAt: new Date() };
+
+    const normalizedPipelineValue = clientData.pipelineValue
+      ? typeof clientData.pipelineValue === "number"
+        ? clientData.pipelineValue.toString()
+        : clientData.pipelineValue
+      : client.pipelineValue;
+
+    const updatedClient = {
+      ...client,
+      ...clientData,
+      pipelineValue: normalizedPipelineValue,
+      tags: clientData.tags ?? client.tags ?? [],
+      updatedAt: new Date(),
+    };
     this.clients.set(id, updatedClient);
     return updatedClient;
   }
@@ -301,8 +405,20 @@ export class MemStorage implements IStorage {
   async updateClientWithCompanyCheck(id: string, clientData: Partial<InsertClient>, companyId: string): Promise<Client | undefined> {
     const client = this.clients.get(id);
     if (!client || client.companyId !== companyId) return undefined;
-    
-    const updatedClient = { ...client, ...clientData, updatedAt: new Date() };
+
+    const normalizedPipelineValue = clientData.pipelineValue
+      ? typeof clientData.pipelineValue === "number"
+        ? clientData.pipelineValue.toString()
+        : clientData.pipelineValue
+      : client.pipelineValue;
+
+    const updatedClient = {
+      ...client,
+      ...clientData,
+      pipelineValue: normalizedPipelineValue,
+      tags: clientData.tags ?? client.tags ?? [],
+      updatedAt: new Date(),
+    };
     this.clients.set(id, updatedClient);
     return updatedClient;
   }
@@ -315,6 +431,47 @@ export class MemStorage implements IStorage {
     const client = this.clients.get(id);
     if (!client || client.companyId !== companyId) return false;
     return this.clients.delete(id);
+  }
+
+  async getClientPipelineSummary(companyId: string): Promise<ClientPipelineSummary> {
+    const clients = await this.getClientsByCompany(companyId);
+    return buildPipelineSummary(clients);
+  }
+
+  async getClientInteractions(clientId: string, companyId: string): Promise<ClientInteraction[]> {
+    return Array.from(this.clientInteractions.values())
+      .filter(interaction => interaction.clientId === clientId && interaction.companyId === companyId)
+      .sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime());
+  }
+
+  async createClientInteraction(insertInteraction: InsertClientInteraction): Promise<ClientInteraction> {
+    const id = randomUUID();
+    const interaction: ClientInteraction = {
+      ...insertInteraction,
+      id,
+      channel: insertInteraction.channel ?? null,
+      nextSteps: insertInteraction.nextSteps ?? null,
+      nextFollowUp: insertInteraction.nextFollowUp ?? null,
+      stage: insertInteraction.stage ?? null,
+      createdBy: insertInteraction.createdBy ?? null,
+      createdAt: new Date(),
+    };
+
+    this.clientInteractions.set(id, interaction);
+
+    const client = this.clients.get(interaction.clientId);
+    if (client) {
+      const updatedClient: Client = {
+        ...client,
+        stage: interaction.stage ?? client.stage,
+        lastContactAt: interaction.occurredAt,
+        nextFollowUp: interaction.nextFollowUp ?? client.nextFollowUp ?? null,
+        updatedAt: new Date(),
+      };
+      this.clients.set(client.id, updatedClient);
+    }
+
+    return interaction;
   }
 
   // Contract methods
@@ -693,6 +850,141 @@ export class MemStorage implements IStorage {
     return this.constructionExpenses.delete(id);
   }
 
+  async getAppointment(id: string): Promise<Appointment | undefined> {
+    return this.appointments.get(id);
+  }
+
+  async getAppointmentsByCompany(
+    companyId: string,
+    filters: {
+      status?: string;
+      clientId?: string;
+      upcomingOnly?: boolean;
+      limit?: number;
+      fromDate?: Date;
+      toDate?: Date;
+    } = {},
+  ): Promise<Appointment[]> {
+    const now = new Date();
+    let appointments = Array.from(this.appointments.values()).filter(
+      appointment => appointment.companyId === companyId,
+    );
+
+    if (filters.status) {
+      appointments = appointments.filter(appointment => appointment.status === filters.status);
+    }
+
+    if (filters.clientId) {
+      appointments = appointments.filter(appointment => appointment.clientId === filters.clientId);
+    }
+
+    if (filters.upcomingOnly) {
+      appointments = appointments.filter(appointment => appointment.scheduledAt >= now);
+    }
+
+    if (filters.fromDate) {
+      appointments = appointments.filter(appointment => appointment.scheduledAt >= filters.fromDate!);
+    }
+
+    if (filters.toDate) {
+      appointments = appointments.filter(appointment => appointment.scheduledAt <= filters.toDate!);
+    }
+
+    appointments.sort((a, b) => a.scheduledAt.getTime() - b.scheduledAt.getTime());
+
+    if (filters.limit) {
+      appointments = appointments.slice(0, filters.limit);
+    }
+
+    return appointments;
+  }
+
+  async createAppointment(insertAppointment: InsertAppointment): Promise<Appointment> {
+    const id = randomUUID();
+    const now = new Date();
+    const appointment: Appointment = {
+      ...insertAppointment,
+      id,
+      propertyId: insertAppointment.propertyId ?? null,
+      status: insertAppointment.status ?? "agendado",
+      type: insertAppointment.type ?? "visita",
+      durationMinutes: insertAppointment.durationMinutes ?? 60,
+      notes: insertAppointment.notes ?? null,
+      agentName: insertAppointment.agentName ?? null,
+      channel: insertAppointment.channel ?? null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    this.appointments.set(id, appointment);
+
+    const client = this.clients.get(appointment.clientId);
+    if (client) {
+      const updatedClient: Client = {
+        ...client,
+        stage: appointment.status === "cancelado" ? client.stage : client.stage === "novo" ? "visita_agendada" : client.stage,
+        nextFollowUp: appointment.scheduledAt,
+        updatedAt: new Date(),
+      };
+
+      if (appointment.status === "realizado") {
+        updatedClient.stage = "fechado";
+      }
+
+      this.clients.set(client.id, updatedClient);
+    }
+
+    return appointment;
+  }
+
+  async updateAppointment(id: string, appointmentData: Partial<InsertAppointment>): Promise<Appointment | undefined> {
+    const appointment = this.appointments.get(id);
+    if (!appointment) return undefined;
+
+    const updatedAppointment: Appointment = {
+      ...appointment,
+      ...appointmentData,
+      propertyId: appointmentData.propertyId ?? appointment.propertyId ?? null,
+      notes: appointmentData.notes ?? appointment.notes ?? null,
+      agentName: appointmentData.agentName ?? appointment.agentName ?? null,
+      channel: appointmentData.channel ?? appointment.channel ?? null,
+      status: appointmentData.status ?? appointment.status,
+      type: appointmentData.type ?? appointment.type,
+      durationMinutes: appointmentData.durationMinutes ?? appointment.durationMinutes,
+      scheduledAt: appointmentData.scheduledAt ?? appointment.scheduledAt,
+      updatedAt: new Date(),
+    };
+
+    this.appointments.set(id, updatedAppointment);
+
+    const client = this.clients.get(updatedAppointment.clientId);
+    if (client) {
+      const updates: Partial<Client> = {
+        nextFollowUp: updatedAppointment.scheduledAt,
+      };
+
+      if (appointmentData.status === "realizado") {
+        updates.stage = "fechado";
+      } else if (appointmentData.status === "cancelado" && client.stage === "visita_agendada") {
+        updates.stage = "qualificado";
+      }
+
+      const updatedClient: Client = {
+        ...client,
+        ...updates,
+        updatedAt: new Date(),
+      };
+
+      this.clients.set(client.id, updatedClient);
+    }
+
+    return updatedAppointment;
+  }
+
+  async deleteAppointment(id: string): Promise<boolean> {
+    return this.appointments.delete(id);
+  }
+
   // Dashboard methods
   async getKPIsByCompany(companyId: string): Promise<{
     activeProperties: number;
@@ -855,21 +1147,68 @@ export class DbStorage implements IStorage {
   }
 
   async createClient(insertClient: InsertClient): Promise<Client> {
-    const result = await db.insert(clients).values(insertClient).returning();
+    const normalizedPipelineValue =
+      insertClient.pipelineValue !== undefined && insertClient.pipelineValue !== null
+        ? typeof insertClient.pipelineValue === "number"
+          ? insertClient.pipelineValue.toString()
+          : insertClient.pipelineValue
+        : null;
+
+    const values = {
+      ...insertClient,
+      stage: insertClient.stage ?? "novo",
+      source: insertClient.source ?? null,
+      tags: insertClient.tags ?? [],
+      pipelineValue: normalizedPipelineValue,
+      lastContactAt: insertClient.lastContactAt ?? null,
+      nextFollowUp: insertClient.nextFollowUp ?? null,
+    };
+
+    const result = await db.insert(clients).values(values).returning();
     return result[0];
   }
 
   async updateClient(id: string, clientData: Partial<InsertClient>): Promise<Client | undefined> {
+    const updates: any = { ...clientData, updatedAt: new Date() };
+
+    if (clientData.pipelineValue !== undefined) {
+      updates.pipelineValue =
+        clientData.pipelineValue === null
+          ? null
+          : typeof clientData.pipelineValue === "number"
+          ? clientData.pipelineValue.toString()
+          : clientData.pipelineValue;
+    }
+
+    if (clientData.tags !== undefined) {
+      updates.tags = clientData.tags;
+    }
+
     const result = await db.update(clients)
-      .set({ ...clientData, updatedAt: new Date() })
+      .set(updates)
       .where(eq(clients.id, id))
       .returning();
     return result[0];
   }
 
   async updateClientWithCompanyCheck(id: string, clientData: Partial<InsertClient>, companyId: string): Promise<Client | undefined> {
+    const updates: any = { ...clientData, updatedAt: new Date() };
+
+    if (clientData.pipelineValue !== undefined) {
+      updates.pipelineValue =
+        clientData.pipelineValue === null
+          ? null
+          : typeof clientData.pipelineValue === "number"
+          ? clientData.pipelineValue.toString()
+          : clientData.pipelineValue;
+    }
+
+    if (clientData.tags !== undefined) {
+      updates.tags = clientData.tags;
+    }
+
     const result = await db.update(clients)
-      .set({ ...clientData, updatedAt: new Date() })
+      .set(updates)
       .where(and(eq(clients.id, id), eq(clients.companyId, companyId)))
       .returning();
     return result[0];
@@ -885,6 +1224,53 @@ export class DbStorage implements IStorage {
       .where(and(eq(clients.id, id), eq(clients.companyId, companyId)))
       .returning();
     return result.length > 0;
+  }
+
+  async getClientPipelineSummary(companyId: string): Promise<ClientPipelineSummary> {
+    const clientList = await this.getClientsByCompany(companyId);
+    return buildPipelineSummary(clientList);
+  }
+
+  async getClientInteractions(clientId: string, companyId: string): Promise<ClientInteraction[]> {
+    const result = await db
+      .select()
+      .from(clientInteractions)
+      .where(and(eq(clientInteractions.clientId, clientId), eq(clientInteractions.companyId, companyId)))
+      .orderBy(desc(clientInteractions.occurredAt));
+    return result;
+  }
+
+  async createClientInteraction(insertInteraction: InsertClientInteraction): Promise<ClientInteraction> {
+    const values = {
+      ...insertInteraction,
+      channel: insertInteraction.channel ?? null,
+      nextSteps: insertInteraction.nextSteps ?? null,
+      nextFollowUp: insertInteraction.nextFollowUp ?? null,
+      stage: insertInteraction.stage ?? null,
+      createdBy: insertInteraction.createdBy ?? null,
+    };
+
+    const result = await db.insert(clientInteractions).values(values).returning();
+    const interaction = result[0];
+
+    if (interaction) {
+      const client = await this.getClient(interaction.clientId);
+      if (client) {
+        const updates: any = {
+          lastContactAt: interaction.occurredAt,
+          nextFollowUp: interaction.nextFollowUp ?? client.nextFollowUp ?? null,
+          updatedAt: new Date(),
+        };
+
+        if (interaction.stage) {
+          updates.stage = interaction.stage;
+        }
+
+        await db.update(clients).set(updates).where(eq(clients.id, client.id));
+      }
+    }
+
+    return interaction;
   }
 
   // Contract methods
@@ -1283,6 +1669,143 @@ export class DbStorage implements IStorage {
 
   async deleteConstructionExpense(id: string): Promise<boolean> {
     const result = await db.delete(constructionExpenses).where(eq(constructionExpenses.id, id)).returning();
+    return result.length > 0;
+  }
+
+  async getAppointment(id: string): Promise<Appointment | undefined> {
+    const result = await db.select().from(appointments).where(eq(appointments.id, id)).limit(1);
+    return result[0];
+  }
+
+  async getAppointmentsByCompany(
+    companyId: string,
+    filters: {
+      status?: string;
+      clientId?: string;
+      upcomingOnly?: boolean;
+      limit?: number;
+      fromDate?: Date;
+      toDate?: Date;
+    } = {},
+  ): Promise<Appointment[]> {
+    const result = await db.select().from(appointments).where(eq(appointments.companyId, companyId));
+    const now = new Date();
+
+    let filtered = result;
+
+    if (filters.status) {
+      filtered = filtered.filter(appointment => appointment.status === filters.status);
+    }
+
+    if (filters.clientId) {
+      filtered = filtered.filter(appointment => appointment.clientId === filters.clientId);
+    }
+
+    if (filters.upcomingOnly) {
+      filtered = filtered.filter(appointment => appointment.scheduledAt >= now);
+    }
+
+    if (filters.fromDate) {
+      filtered = filtered.filter(appointment => appointment.scheduledAt >= filters.fromDate!);
+    }
+
+    if (filters.toDate) {
+      filtered = filtered.filter(appointment => appointment.scheduledAt <= filters.toDate!);
+    }
+
+    filtered.sort((a, b) => a.scheduledAt.getTime() - b.scheduledAt.getTime());
+
+    if (filters.limit) {
+      filtered = filtered.slice(0, filters.limit);
+    }
+
+    return filtered;
+  }
+
+  async createAppointment(insertAppointment: InsertAppointment): Promise<Appointment> {
+    const values = {
+      ...insertAppointment,
+      propertyId: insertAppointment.propertyId ?? null,
+      status: insertAppointment.status ?? "agendado",
+      type: insertAppointment.type ?? "visita",
+      durationMinutes: insertAppointment.durationMinutes ?? 60,
+      notes: insertAppointment.notes ?? null,
+      agentName: insertAppointment.agentName ?? null,
+      channel: insertAppointment.channel ?? null,
+    };
+
+    const result = await db.insert(appointments).values(values).returning();
+    const appointment = result[0];
+
+    if (appointment) {
+      const client = await this.getClient(appointment.clientId);
+      if (client) {
+        let stage = client.stage;
+        if (appointment.status === "realizado") {
+          stage = "fechado";
+        } else if (appointment.status !== "cancelado" && client.stage === "novo") {
+          stage = "visita_agendada";
+        }
+
+        const updates: any = {
+          nextFollowUp: appointment.scheduledAt,
+          updatedAt: new Date(),
+        };
+
+        if (stage !== client.stage) {
+          updates.stage = stage;
+        }
+
+        await db.update(clients).set(updates).where(eq(clients.id, client.id));
+      }
+    }
+
+    return appointment;
+  }
+
+  async updateAppointment(id: string, appointmentData: Partial<InsertAppointment>): Promise<Appointment | undefined> {
+    const updates: any = { updatedAt: new Date() };
+
+    if (appointmentData.status !== undefined) updates.status = appointmentData.status;
+    if (appointmentData.type !== undefined) updates.type = appointmentData.type;
+    if (appointmentData.scheduledAt !== undefined) updates.scheduledAt = appointmentData.scheduledAt;
+    if (appointmentData.durationMinutes !== undefined) updates.durationMinutes = appointmentData.durationMinutes;
+    if (appointmentData.propertyId !== undefined) updates.propertyId = appointmentData.propertyId;
+    if (appointmentData.notes !== undefined) updates.notes = appointmentData.notes;
+    if (appointmentData.agentName !== undefined) updates.agentName = appointmentData.agentName;
+    if (appointmentData.channel !== undefined) updates.channel = appointmentData.channel;
+
+    const result = await db.update(appointments)
+      .set(updates)
+      .where(eq(appointments.id, id))
+      .returning();
+
+    const appointment = result[0];
+    if (!appointment) {
+      return undefined;
+    }
+
+    const client = await this.getClient(appointment.clientId);
+    if (client) {
+      const updatesToClient: any = {
+        nextFollowUp: appointment.scheduledAt,
+        updatedAt: new Date(),
+      };
+
+      if (appointment.status === "realizado") {
+        updatesToClient.stage = "fechado";
+      } else if (appointment.status === "cancelado" && client.stage === "visita_agendada") {
+        updatesToClient.stage = "qualificado";
+      }
+
+      await db.update(clients).set(updatesToClient).where(eq(clients.id, client.id));
+    }
+
+    return appointment;
+  }
+
+  async deleteAppointment(id: string): Promise<boolean> {
+    const result = await db.delete(appointments).where(eq(appointments.id, id)).returning();
     return result.length > 0;
   }
 

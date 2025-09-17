@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
 import { setupAuth } from "./auth";
-import { insertPropertySchema, insertClientSchema, insertContractSchema, insertTransactionSchema, insertConstructionSchema, insertConstructionTaskSchema, insertConstructionExpenseSchema } from "@shared/schema";
+import { insertPropertySchema, insertClientSchema, insertContractSchema, insertTransactionSchema, insertConstructionSchema, insertConstructionTaskSchema, insertConstructionExpenseSchema, insertClientInteractionSchema, insertAppointmentSchema } from "@shared/schema";
 import { z } from "zod";
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -166,18 +166,261 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.delete("/api/clients/:id", async (req, res) => {
     if (!req.isAuthenticated()) return res.sendStatus(401);
-    
+
     try {
       const { id } = req.params;
       const deleted = await storage.deleteClientWithCompanyCheck(id, req.user!.companyId);
-      
+
       if (!deleted) {
         return res.status(404).json({ message: "Cliente não encontrado" });
       }
-      
+
       res.sendStatus(204);
     } catch (error) {
       res.status(500).json({ message: "Erro ao deletar cliente" });
+    }
+  });
+
+  app.get("/api/clients/pipeline", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+
+    try {
+      const summary = await storage.getClientPipelineSummary(req.user!.companyId);
+      res.json(summary);
+    } catch (error) {
+      res.status(500).json({ message: "Erro ao carregar o pipeline de clientes" });
+    }
+  });
+
+  app.get("/api/clients/:id/interactions", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+
+    try {
+      const { id } = req.params;
+      const client = await storage.getClientWithCompanyCheck(id, req.user!.companyId);
+
+      if (!client) {
+        return res.status(404).json({ message: "Cliente não encontrado" });
+      }
+
+      const interactions = await storage.getClientInteractions(id, req.user!.companyId);
+      res.json(interactions);
+    } catch (error) {
+      res.status(500).json({ message: "Erro ao buscar interações" });
+    }
+  });
+
+  app.post("/api/clients/:id/interactions", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+
+    try {
+      const { id } = req.params;
+      const client = await storage.getClientWithCompanyCheck(id, req.user!.companyId);
+
+      if (!client) {
+        return res.status(404).json({ message: "Cliente não encontrado" });
+      }
+
+      const data = insertClientInteractionSchema.parse({
+        ...req.body,
+        clientId: id,
+        companyId: req.user!.companyId,
+      });
+
+      const interaction = await storage.createClientInteraction(data);
+
+      await storage.createActivity({
+        type: "client_interaction",
+        title: `Interação registrada com ${client.name}`,
+        description: data.summary,
+        entityType: "client",
+        entityId: client.id,
+        userId: req.user!.id,
+        companyId: req.user!.companyId,
+      });
+
+      res.status(201).json(interaction);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Dados inválidos", errors: error.errors });
+      }
+      res.status(500).json({ message: "Erro ao registrar interação" });
+    }
+  });
+
+  // Appointment routes
+  app.get("/api/appointments", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+
+    try {
+      const filters: {
+        status?: string;
+        clientId?: string;
+        upcomingOnly?: boolean;
+        limit?: number;
+        fromDate?: Date;
+        toDate?: Date;
+      } = {};
+
+      if (req.query.status) filters.status = req.query.status as string;
+      if (req.query.clientId) filters.clientId = req.query.clientId as string;
+      if (req.query.upcoming === "true") filters.upcomingOnly = true;
+      if (req.query.limit) {
+        const parsed = parseInt(req.query.limit as string, 10);
+        if (!Number.isNaN(parsed)) filters.limit = parsed;
+      }
+      if (req.query.fromDate) {
+        const date = new Date(req.query.fromDate as string);
+        if (!Number.isNaN(date.getTime())) filters.fromDate = date;
+      }
+      if (req.query.toDate) {
+        const date = new Date(req.query.toDate as string);
+        if (!Number.isNaN(date.getTime())) filters.toDate = date;
+      }
+
+      const appointments = await storage.getAppointmentsByCompany(req.user!.companyId, filters);
+      res.json(appointments);
+    } catch (error) {
+      res.status(500).json({ message: "Erro ao buscar compromissos" });
+    }
+  });
+
+  app.post("/api/appointments", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+
+    try {
+      const normalizedBody: Record<string, unknown> = {
+        ...req.body,
+        companyId: req.user!.companyId,
+      };
+
+      if (normalizedBody.propertyId === "" || normalizedBody.propertyId === null) {
+        delete normalizedBody.propertyId;
+      }
+
+      if (!normalizedBody.agentName) {
+        normalizedBody.agentName = req.user!.name;
+      }
+
+      const data = insertAppointmentSchema.parse(normalizedBody);
+
+      const client = await storage.getClientWithCompanyCheck(data.clientId, req.user!.companyId);
+      if (!client) {
+        return res.status(400).json({ message: "Cliente inválido para este compromisso" });
+      }
+
+      if (data.propertyId) {
+        const property = await storage.getPropertyWithCompanyCheck(data.propertyId, req.user!.companyId);
+        if (!property) {
+          return res.status(400).json({ message: "Imóvel inválido para este compromisso" });
+        }
+      }
+
+      const appointment = await storage.createAppointment(data);
+
+      await storage.createActivity({
+        type: "appointment_created",
+        title: `Compromisso agendado com ${client.name}`,
+        description: `${data.type} agendado para ${new Date(data.scheduledAt).toLocaleString('pt-BR')}`,
+        entityType: "client",
+        entityId: client.id,
+        userId: req.user!.id,
+        companyId: req.user!.companyId,
+      });
+
+      const broadcast = (req.app as any).broadcastToCompany;
+      if (broadcast) {
+        broadcast(req.user!.companyId, {
+          type: "appointment_created",
+          payload: {
+            appointment,
+            clientName: client.name,
+          },
+        });
+      }
+
+      res.status(201).json(appointment);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Dados inválidos", errors: error.errors });
+      }
+      res.status(500).json({ message: "Erro ao criar compromisso" });
+    }
+  });
+
+  app.put("/api/appointments/:id", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+
+    try {
+      const { id } = req.params;
+      const existing = await storage.getAppointment(id);
+
+      if (!existing || existing.companyId !== req.user!.companyId) {
+        return res.status(404).json({ message: "Compromisso não encontrado" });
+      }
+
+      const normalizedBody: Record<string, unknown> = { ...req.body };
+      if (normalizedBody.propertyId === "" || normalizedBody.propertyId === null) {
+        normalizedBody.propertyId = null;
+      }
+
+      if (normalizedBody.clientId) {
+        const client = await storage.getClientWithCompanyCheck(normalizedBody.clientId as string, req.user!.companyId);
+        if (!client) {
+          return res.status(400).json({ message: "Cliente inválido para este compromisso" });
+        }
+      }
+
+      const data = insertAppointmentSchema.partial().parse(normalizedBody);
+      const appointment = await storage.updateAppointment(id, data);
+
+      const broadcast = (req.app as any).broadcastToCompany;
+      if (broadcast) {
+        broadcast(req.user!.companyId, {
+          type: "appointment_updated",
+          payload: {
+            appointment,
+          },
+        });
+      }
+
+      res.json(appointment);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Dados inválidos", errors: error.errors });
+      }
+      res.status(500).json({ message: "Erro ao atualizar compromisso" });
+    }
+  });
+
+  app.delete("/api/appointments/:id", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+
+    try {
+      const { id } = req.params;
+      const existing = await storage.getAppointment(id);
+
+      if (!existing || existing.companyId !== req.user!.companyId) {
+        return res.status(404).json({ message: "Compromisso não encontrado" });
+      }
+
+      const deleted = await storage.deleteAppointment(id);
+
+      if (!deleted) {
+        return res.status(500).json({ message: "Não foi possível remover o compromisso" });
+      }
+
+      const broadcast = (req.app as any).broadcastToCompany;
+      if (broadcast) {
+        broadcast(req.user!.companyId, {
+          type: "appointment_deleted",
+          payload: { id },
+        });
+      }
+
+      res.sendStatus(204);
+    } catch (error) {
+      res.status(500).json({ message: "Erro ao remover compromisso" });
     }
   });
 

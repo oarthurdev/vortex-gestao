@@ -166,7 +166,12 @@ export default function ContractsFinancials() {
               </div>
             ) : (
               expiringContracts.map((contract) => {
-                const daysUntil = getDaysUntilExpiration(contract.endDate!);
+                const endDateString = contract.endDate
+                  ? new Date(contract.endDate).toString()
+                  : "";
+                const daysUntil = endDateString
+                  ? getDaysUntilExpiration(endDateString)
+                  : 0;
                 
                 return (
                   <div 

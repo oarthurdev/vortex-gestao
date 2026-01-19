@@ -4,17 +4,42 @@
     "rsc": false,
     "tsx": true,
     "tailwind": {
-      "config": "tailwind.config.ts",
-      "css": "client/src/index.css",
-      "baseColor": "neutral",
-      "cssVariables": true,
-      "prefix": ""
+        "config": "tailwind.config.ts",
+        "css": "client/src/index.css",
+        "baseColor": "neutral",
+        "cssVariables": true,
+        "prefix": ""
     },
     "aliases": {
-      "components": "@/components",
-      "utils": "@/lib/utils",
-      "ui": "@/components/ui",
-      "lib": "@/lib",
-      "hooks": "@/hooks"
+        "components": "@/components",
+        "utils": "@/lib/utils",
+        "ui": "@/components/ui",
+        "lib": "@/lib",
+        "hooks": "@/hooks"
+    },
+    "documentation": {
+        "title": "Projeto de Componentes UI",
+        "description": "Este projeto contém componentes reutilizáveis de UI.",
+        "installation": {
+            "steps": [
+                "Clone o repositório: git clone <url-do-repositorio>",
+                "Navegue até o diretório do projeto: cd <nome-do-repositorio>",
+                "Instale as dependências: npm install"
+            ]
+        },
+        "usage": {
+            "basic": "Importe os componentes a partir dos aliases definidos.",
+            "example": "import { Button } from 'components';"
+        },
+        "contributing": {
+            "steps": [
+                "Fork o repositório.",
+                "Crie sua branch: git checkout -b minha-branch-nome.",
+                "Realize suas alterações e faça commit: git commit -m 'minha contribuição'.",
+                "Faça push para a branch: git push origin minha-branch-nome.",
+                "Abra uma Pull Request."
+            ],
+            "guidelines": "Certifique-se de seguir as melhores práticas de codificação e incluir testes."
+        }
     }
 }

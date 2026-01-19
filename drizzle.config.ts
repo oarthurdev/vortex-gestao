@@ -1,14 +1,7 @@
-import { defineConfig } from "drizzle-kit";
+# Drizzle Config
 
-if (!process.env.DATABASE_URL) {
-  throw new Error("DATABASE_URL, ensure the database is provisioned");
-}
+Este é um arquivo de configuração para o Drizzle, uma biblioteca que facilita a interação com bancos de dados. Este projeto utiliza PostgreSQL como seu banco de dados.
 
-export default defineConfig({
-  out: "./migrations",
-  schema: "./shared/schema.ts",
-  dialect: "postgresql",
-  dbCredentials: {
-    url: process.env.DATABASE_URL,
-  },
-});
+## Instalação
+
+1. **Clone o repositório:**
